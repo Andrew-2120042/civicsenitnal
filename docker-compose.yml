@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: civicsentinel-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models
+      - ./civicsentinel.db:/app/civicsentinel.db
+      - ./test_images:/app/test_images
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./civicsentinel.db
+      - MODEL_PATH=models/yolov8s.pt
+      - MODEL_CONFIDENCE_THRESHOLD=0.5
+      - MODEL_FRAME_SIZE=640
+      - LOG_LEVEL=INFO
+      - TEST_API_KEY=test_api_key_123
+    restart: unless-stopped
+    networks:
+      - civicsentinel-network
+
+networks:
+  civicsentinel-network:
+    driver: bridge

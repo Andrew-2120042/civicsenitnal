@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CivicSentinel - Visual Detection Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.95;
+        }
+
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            padding: 30px;
+        }
+
+        .upload-section {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .upload-zone {
+            border: 3px dashed #667eea;
+            border-radius: 12px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9fa;
+            min-height: 250px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .upload-zone:hover {
+            border-color: #764ba2;
+            background: #f0f4ff;
+            transform: translateY(-2px);
+        }
+
+        .upload-zone.dragover {
+            border-color: #27ae60;
+            background: #e8f8f5;
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 15px;
+        }
+
+        .upload-zone h3 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 1.3em;
+        }
+
+        .upload-zone p {
+            color: #7f8c8d;
+            font-size: 0.95em;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .settings {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e1e8ed;
+        }
+
+        .settings h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        .setting-item {
+            margin-bottom: 15px;
+        }
+
+        .setting-item label {
+            display: block;
+            color: #555;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+
+        .setting-item input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .results-section {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .canvas-container {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            min-height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .canvas-container canvas {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .placeholder {
+            color: #7f8c8d;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .placeholder-icon {
+            font-size: 4em;
+            margin-bottom: 15px;
+            opacity: 0.3;
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e1e8ed;
+        }
+
+        .info-box h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .detections-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .detection-item {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .detection-item.high-confidence {
+            border-left-color: #27ae60;
+        }
+
+        .detection-item.medium-confidence {
+            border-left-color: #f39c12;
+        }
+
+        .confidence-badge {
+            background: #3498db;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .confidence-badge.high {
+            background: #27ae60;
+        }
+
+        .confidence-badge.medium {
+            background: #f39c12;
+        }
+
+        .alerts-box {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        .alerts-box.danger {
+            background: #f8d7da;
+            border-color: #dc3545;
+        }
+
+        .alert-item {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 10px;
+            border-left: 4px solid #dc3545;
+        }
+
+        .alert-item strong {
+            color: #dc3545;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 30px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+            border: 1px solid #e1e8ed;
+        }
+
+        .stat-number {
+            font-size: 2em;
+            font-weight: 700;
+            color: #667eea;
+            display: block;
+        }
+
+        .stat-label {
+            font-size: 0.85em;
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+
+        .no-results {
+            text-align: center;
+            padding: 30px;
+            color: #7f8c8d;
+        }
+
+        @media (max-width: 1024px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎥 CivicSentinel Visual Detection</h1>
+            <p>Upload an image to detect persons and visualize zone alerts</p>
+        </div>
+
+        <div class="content">
+            <!-- Upload Section -->
+            <div class="upload-section">
+                <div class="upload-zone" id="uploadZone">
+                    <div class="upload-icon">📸</div>
+                    <h3>Drop image here or click to browse</h3>
+                    <p>Supports JPG, PNG, WEBP</p>
+                    <input type="file" id="fileInput" accept="image/*">
+                </div>
+
+                <div class="settings">
+                    <h3>⚙️ Settings</h3>
+                    <div class="setting-item">
+                        <label>Camera ID</label>
+                        <input type="text" id="cameraId" value="test_camera_001" placeholder="e.g., cam_001">
+                    </div>
+                    <div class="setting-item">
+                        <label>API Endpoint</label>
+                        <input type="text" id="apiEndpoint" value="http://localhost:8000/api/v1/detect" readonly>
+                    </div>
+                </div>
+
+                <button id="detectBtn" disabled>🔍 Detect Persons</button>
+            </div>
+
+            <!-- Results Section -->
+            <div class="results-section">
+                <div class="canvas-container" id="canvasContainer">
+                    <div class="placeholder">
+                        <div class="placeholder-icon">🖼️</div>
+                        <p>Upload an image to see detection results</p>
+                    </div>
+                </div>
+
+                <div class="info-box" id="infoBox" style="display: none;">
+                    <div class="stats" id="statsContainer"></div>
+
+                    <h3>🎯 Detections</h3>
+                    <div class="detections-list" id="detectionsList"></div>
+
+                    <div id="alertsContainer"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_KEY = 'test_api_key_123';
+        let selectedFile = null;
+        let originalImage = null;
+
+        // Elements
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const detectBtn = document.getElementById('detectBtn');
+        const canvasContainer = document.getElementById('canvasContainer');
+        const infoBox = document.getElementById('infoBox');
+        const cameraIdInput = document.getElementById('cameraId');
+
+        // Upload zone click
+        uploadZone.addEventListener('click', () => fileInput.click());
+
+        // File selection
+        fileInput.addEventListener('change', (e) => {
+            handleFile(e.target.files[0]);
+        });
+
+        // Drag and drop
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            handleFile(e.dataTransfer.files[0]);
+        });
+
+        // Detect button
+        detectBtn.addEventListener('click', detectPersons);
+
+        function handleFile(file) {
+            if (!file || !file.type.startsWith('image/')) {
+                alert('Please select a valid image file');
+                return;
+            }
+
+            selectedFile = file;
+            detectBtn.disabled = false;
+            detectBtn.textContent = '🔍 Detect Persons';
+
+            // Show preview
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    displayImage(img);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function displayImage(img, detections = [], alerts = []) {
+            canvasContainer.innerHTML = '';
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+
+            // Set canvas size to image size
+            canvas.width = img.width;
+            canvas.height = img.height;
+
+            // Draw image
+            ctx.drawImage(img, 0, 0);
+
+            // Draw bounding boxes
+            detections.forEach((detection, index) => {
+                const bbox = detection.bbox;
+
+                // Draw red rectangle
+                ctx.strokeStyle = '#dc3545';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(bbox.x1, bbox.y1, bbox.x2 - bbox.x1, bbox.y2 - bbox.y1);
+
+                // Draw semi-transparent fill
+                ctx.fillStyle = 'rgba(220, 53, 69, 0.1)';
+                ctx.fillRect(bbox.x1, bbox.y1, bbox.x2 - bbox.x1, bbox.y2 - bbox.y1);
+
+                // Draw label background
+                const label = `Person ${index + 1}: ${(detection.confidence * 100).toFixed(1)}%`;
+                ctx.font = 'bold 16px Arial';
+                const textWidth = ctx.measureText(label).width;
+
+                ctx.fillStyle = '#dc3545';
+                ctx.fillRect(bbox.x1, bbox.y1 - 30, textWidth + 20, 30);
+
+                // Draw label text
+                ctx.fillStyle = 'white';
+                ctx.fillText(label, bbox.x1 + 10, bbox.y1 - 10);
+            });
+
+            canvasContainer.appendChild(canvas);
+        }
+
+        async function detectPersons() {
+            if (!selectedFile) return;
+
+            detectBtn.disabled = true;
+            detectBtn.textContent = '⏳ Processing...';
+
+            // Show loading
+            canvasContainer.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Running YOLO detection...</p>
+                </div>
+            `;
+
+            const formData = new FormData();
+            formData.append('image', selectedFile);
+            formData.append('camera_id', cameraIdInput.value);
+
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/detect', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`
+                    },
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Detection failed');
+                }
+
+                // Display results
+                displayResults(data);
+
+            } catch (error) {
+                canvasContainer.innerHTML = `
+                    <div class="no-results">
+                        <div style="font-size: 3em; margin-bottom: 15px;">❌</div>
+                        <h3 style="color: #e74c3c;">Error</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+                infoBox.style.display = 'none';
+            } finally {
+                detectBtn.disabled = false;
+                detectBtn.textContent = '🔍 Detect Persons';
+            }
+        }
+
+        function displayResults(data) {
+            const { detections, alerts, camera_id, timestamp } = data;
+
+            // Display image with bounding boxes
+            displayImage(originalImage, detections, alerts);
+
+            // Show info box
+            infoBox.style.display = 'block';
+
+            // Display stats
+            const statsContainer = document.getElementById('statsContainer');
+            statsContainer.innerHTML = `
+                <div class="stat-card">
+                    <span class="stat-number">${detections.length}</span>
+                    <span class="stat-label">Persons Detected</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-number">${alerts.length}</span>
+                    <span class="stat-label">Zone Alerts</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-number">${detections.length > 0 ? Math.max(...detections.map(d => (d.confidence * 100).toFixed(0))) + '%' : 'N/A'}</span>
+                    <span class="stat-label">Max Confidence</span>
+                </div>
+            `;
+
+            // Display detections
+            const detectionsList = document.getElementById('detectionsList');
+
+            if (detections.length === 0) {
+                detectionsList.innerHTML = `
+                    <div class="no-results">
+                        <p>No persons detected in this image</p>
+                    </div>
+                `;
+            } else {
+                detectionsList.innerHTML = detections.map((detection, index) => {
+                    const confidence = detection.confidence;
+                    const confidenceClass = confidence >= 0.8 ? 'high' : confidence >= 0.5 ? 'medium' : '';
+                    const confidenceBadgeClass = confidence >= 0.8 ? 'high' : confidence >= 0.5 ? 'medium' : '';
+
+                    return `
+                        <div class="detection-item ${confidenceClass}-confidence">
+                            <div>
+                                <strong>Person ${index + 1}</strong>
+                                <div style="font-size: 0.85em; color: #7f8c8d; margin-top: 3px;">
+                                    Position: (${Math.round(detection.bbox.x1)}, ${Math.round(detection.bbox.y1)}) →
+                                    (${Math.round(detection.bbox.x2)}, ${Math.round(detection.bbox.y2)})
+                                </div>
+                            </div>
+                            <span class="confidence-badge ${confidenceBadgeClass}">
+                                ${(confidence * 100).toFixed(1)}%
+                            </span>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // Display alerts
+            const alertsContainer = document.getElementById('alertsContainer');
+
+            if (alerts.length > 0) {
+                alertsContainer.innerHTML = `
+                    <div class="alerts-box danger">
+                        <h3 style="color: #dc3545; margin-bottom: 10px;">🚨 Zone Alerts</h3>
+                        ${alerts.map(alert => `
+                            <div class="alert-item">
+                                <strong>${alert.zone_name}</strong>
+                                <div style="margin-top: 5px; font-size: 0.9em;">
+                                    Type: ${alert.alert_type} |
+                                    Confidence: ${(alert.confidence * 100).toFixed(1)}%
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } else if (detections.length > 0) {
+                alertsContainer.innerHTML = `
+                    <div class="alerts-box">
+                        <h3 style="color: #856404; margin-bottom: 5px;">✅ No Zone Violations</h3>
+                        <p style="margin: 0; color: #856404;">All detected persons are outside restricted zones</p>
+                    </div>
+                `;
+            } else {
+                alertsContainer.innerHTML = '';
+            }
+        }
+    </script>
+</body>
+</html>
