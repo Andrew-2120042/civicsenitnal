@@ -96,23 +96,48 @@ pub async fn scan_for_cameras() -> Result<Vec<DiscoveredCamera>, String> {
     Ok(discovered_cameras)
 }
 
-/// Test if a camera connection works
+/// Test if a camera connection works by attempting to capture a frame
 pub async fn test_camera_connection(rtsp_url: &str) -> Result<bool, String> {
     println!("[Camera] Testing connection to: {}", rtsp_url);
 
-    // In production, this would:
-    // 1. Try to connect to RTSP stream
-    // 2. Attempt to read a frame
-    // 3. Return true if successful
+    // Test RTSP connection by attempting to capture a frame
+    let url = rtsp_url.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let ffmpeg_path = get_ffmpeg_path();
 
-    // For now, simulate by checking URL format
-    if rtsp_url.starts_with("rtsp://") {
-        // Simulate network delay
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        Ok(true)
-    } else {
-        Err("Invalid RTSP URL".to_string())
-    }
+        println!("[Camera] Testing RTSP with ffmpeg: {}", url);
+
+        let output = Command::new(ffmpeg_path)
+            .args(&[
+                "-rtsp_transport", "tcp",
+                "-timeout", "5000000",  // 5 second timeout (in microseconds)
+                "-i", &url,
+                "-vframes", "1",
+                "-f", "null",
+                "-",
+            ])
+            .output();
+
+        match output {
+            Ok(out) => {
+                let success = out.status.success();
+                if success {
+                    println!("[Camera] ✓ RTSP connection successful: {}", url);
+                } else {
+                    println!("[Camera] ✗ RTSP connection failed: {}", url);
+                }
+                Ok(success)
+            },
+            Err(e) => {
+                println!("[Camera] ✗ FFmpeg error: {}", e);
+                Err(format!("FFmpeg error: {}", e))
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    Ok(result)
 }
 
 /// Connect to a camera or video file
@@ -158,6 +183,71 @@ pub async fn connect(source_url: &str) -> Result<CameraHandle, String> {
     })
 }
 
+/// Helper function to get ffmpeg path
+fn get_ffmpeg_path() -> &'static str {
+    if std::path::Path::new("/opt/homebrew/bin/ffmpeg").exists() {
+        "/opt/homebrew/bin/ffmpeg"
+    } else if std::path::Path::new("/usr/local/bin/ffmpeg").exists() {
+        "/usr/local/bin/ffmpeg"
+    } else {
+        "ffmpeg" // Fallback to PATH
+    }
+}
+
+/// Capture frame from RTSP stream using FFmpeg
+fn capture_frame_rtsp(url: &str) -> Result<Vec<u8>, String> {
+    println!("[Camera] Capturing RTSP frame from: {}", url);
+
+    let ffmpeg_path = get_ffmpeg_path();
+
+    let output = Command::new(ffmpeg_path)
+        .args(&[
+            "-rtsp_transport", "tcp",  // TCP is more reliable than UDP
+            "-i", url,
+            "-vframes", "1",           // Capture 1 frame
+            "-vf", "scale=960:-1",     // Resize to 960px width
+            "-f", "image2pipe",        // Output as image
+            "-vcodec", "mjpeg",        // JPEG encoding
+            "-q:v", "5",               // Quality (1=best, 31=worst)
+            "-",                       // Output to stdout
+        ])
+        .output()
+        .map_err(|e| format!("Failed to capture RTSP frame: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("FFmpeg error: {}", error));
+    }
+
+    println!("[Camera] RTSP frame captured successfully, {} bytes", output.stdout.len());
+    Ok(output.stdout)
+}
+
+/// Capture frame from RTSP with retry logic
+fn capture_frame_rtsp_with_retry(url: &str, max_retries: u32) -> Result<Vec<u8>, String> {
+    for attempt in 1..=max_retries {
+        println!("[Camera] RTSP capture attempt {}/{}", attempt, max_retries);
+
+        match capture_frame_rtsp(url) {
+            Ok(frame) => {
+                println!("[Camera] RTSP frame captured successfully");
+                return Ok(frame);
+            },
+            Err(e) => {
+                if attempt < max_retries {
+                    println!("[Camera] RTSP capture failed, retrying in 2s: {}", e);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                } else {
+                    println!("[Camera] RTSP capture failed after {} attempts", max_retries);
+                    return Err(format!("Failed after {} retries: {}", max_retries, e));
+                }
+            }
+        }
+    }
+
+    Err("Failed to capture RTSP frame".to_string())
+}
+
 /// Capture a single frame from camera or video file
 pub async fn capture_frame(handle: &CameraHandle) -> Result<Vec<u8>, String> {
     if !handle.is_connected {
@@ -167,73 +257,72 @@ pub async fn capture_frame(handle: &CameraHandle) -> Result<Vec<u8>, String> {
     let mut source = handle.source.lock().await;
 
     match &mut *source {
-        CameraSource::Rtsp(_url) => {
-            // For RTSP streams, generate placeholder image
-            // In production, this would capture from actual RTSP stream
-            let img = image::ImageBuffer::from_fn(640, 480, |x, y| {
-                let r = (x as f32 / 640.0 * 255.0) as u8;
-                let g = (y as f32 / 480.0 * 255.0) as u8;
-                let b = 128;
-                image::Rgb([r, g, b])
-            });
-
-            let mut bytes: Vec<u8> = Vec::new();
-            let mut cursor = std::io::Cursor::new(&mut bytes);
-
-            img.write_to(&mut cursor, image::ImageFormat::Jpeg)
-                .map_err(|e| format!("Failed to encode image: {}", e))?;
-
-            Ok(bytes)
+        CameraSource::Rtsp(url) => {
+            // Capture from real RTSP stream with retry logic
+            let url = url.clone();
+            // Run blocking FFmpeg call in a blocking task to avoid blocking async runtime
+            tokio::task::spawn_blocking(move || {
+                capture_frame_rtsp_with_retry(&url, 3)
+            })
+            .await
+            .map_err(|e| format!("Task join error: {}", e))?
         }
         CameraSource::VideoFile { path, current_frame } => {
             // Extract frame using ffmpeg
             let frame_num = *current_frame;
             *current_frame += 1;  // Increment for next call
 
-            // Use ffmpeg to extract specific frame
-            // Try common ffmpeg locations
-            let ffmpeg_path = if std::path::Path::new("/opt/homebrew/bin/ffmpeg").exists() {
-                "/opt/homebrew/bin/ffmpeg"
-            } else if std::path::Path::new("/usr/local/bin/ffmpeg").exists() {
-                "/usr/local/bin/ffmpeg"
-            } else {
-                "ffmpeg" // Fallback to PATH
-            };
+            let path_clone = path.clone();
 
-            let output = Command::new(ffmpeg_path)
-                .args(&[
-                    "-i", path,
-                    "-vf", &format!("select=eq(n\\,{}),scale=960:-1", frame_num),  // Resize to 960px width - better quality
-                    "-frames:v", "1",
-                    "-f", "image2pipe",
-                    "-vcodec", "mjpeg",
-                    "-q:v", "5",  // Better quality (1=best, 31=worst)
-                    "-",
-                ])
-                .output()
-                .map_err(|e| format!("Failed to run ffmpeg: {}. Make sure ffmpeg is installed.", e))?;
+            // Run blocking FFmpeg call in a blocking task
+            let result = tokio::task::spawn_blocking(move || {
+                let ffmpeg_path = get_ffmpeg_path();
 
-            if !output.status.success() {
-                // If we've gone past the end of video, loop back to start
-                *current_frame = 0;
-                return capture_frame_at_position(path, 0);
+                let output = Command::new(ffmpeg_path)
+                    .args(&[
+                        "-i", &path_clone,
+                        "-vf", &format!("select=eq(n\\,{}),scale=960:-1", frame_num),  // Resize to 960px width - better quality
+                        "-frames:v", "1",
+                        "-f", "image2pipe",
+                        "-vcodec", "mjpeg",
+                        "-q:v", "5",  // Better quality (1=best, 31=worst)
+                        "-",
+                    ])
+                    .output()
+                    .map_err(|e| format!("Failed to run ffmpeg: {}. Make sure ffmpeg is installed.", e))?;
+
+                if !output.status.success() {
+                    // If we've gone past the end of video, loop back to start
+                    return capture_frame_at_position(&path_clone, 0);
+                }
+
+                Ok(output.stdout)
+            })
+            .await
+            .map_err(|e| format!("Task join error: {}", e))?;
+
+            // Reset frame counter if we looped
+            if result.is_ok() && frame_num > 0 {
+                // Check if we looped by seeing if result came from position 0
+                // If so, reset counter
+                match result {
+                    Ok(ref bytes) if bytes.len() > 0 => {
+                        // Successfully got frame
+                    }
+                    _ => {
+                        *current_frame = 1; // Reset and we just got frame 0
+                    }
+                }
             }
 
-            Ok(output.stdout)
+            result
         }
     }
 }
 
 /// Helper function to capture frame at specific position
 fn capture_frame_at_position(video_path: &str, frame_num: usize) -> Result<Vec<u8>, String> {
-    // Try common ffmpeg locations
-    let ffmpeg_path = if std::path::Path::new("/opt/homebrew/bin/ffmpeg").exists() {
-        "/opt/homebrew/bin/ffmpeg"
-    } else if std::path::Path::new("/usr/local/bin/ffmpeg").exists() {
-        "/usr/local/bin/ffmpeg"
-    } else {
-        "ffmpeg" // Fallback to PATH
-    };
+    let ffmpeg_path = get_ffmpeg_path();
 
     let output = Command::new(ffmpeg_path)
         .args(&[

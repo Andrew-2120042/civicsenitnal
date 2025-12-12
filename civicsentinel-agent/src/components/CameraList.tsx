@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Camera, Video, Play, Pause, Settings as SettingsIcon, Edit, Plus, FileVideo, Eye } from 'lucide-react';
+import { Camera, Video, Play, Pause, Settings as SettingsIcon, Edit, Plus, FileVideo, Eye, Radio } from 'lucide-react';
 import { useCameraStore } from '../stores/cameraStore';
 import { useSettingsStore } from '../stores/settingsStore';
 import { ZoneEditor } from './ZoneEditor';
@@ -13,6 +13,49 @@ export function CameraList() {
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
   const [editingZone, setEditingZone] = useState<string | null>(null);
   const [liveViewCamera, setLiveViewCamera] = useState<{ id: string; name: string } | null>(null);
+  const [showRtspDialog, setShowRtspDialog] = useState(false);
+  const [rtspUrl, setRtspUrl] = useState('');
+  const [rtspName, setRtspName] = useState('');
+
+  // Helper function to detect source type
+  const getSourceType = (url: string): 'rtsp' | 'video' => {
+    if (url.startsWith('rtsp://') || url.startsWith('rtmp://')) {
+      return 'rtsp';
+    }
+    return 'video';
+  };
+
+  const handleAddRtspCamera = () => {
+    setShowRtspDialog(true);
+    setRtspUrl('');
+    setRtspName('');
+  };
+
+  const handleSaveRtspCamera = () => {
+    if (!rtspUrl || !rtspName) {
+      alert('Please enter both camera name and RTSP URL');
+      return;
+    }
+
+    if (!rtspUrl.startsWith('rtsp://')) {
+      alert('RTSP URL must start with rtsp://');
+      return;
+    }
+
+    const id = `rtsp_${rtspName.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+    addCamera({
+      id,
+      name: rtspName,
+      rtspUrl,
+      status: 'disconnected',
+      isMonitoring: false,
+    });
+
+    setShowRtspDialog(false);
+    setRtspUrl('');
+    setRtspName('');
+  };
 
   const handleAddVideoFile = async () => {
     try {
@@ -140,13 +183,22 @@ export function CameraList() {
               Manage and monitor your connected cameras
             </p>
           </div>
-          <button
-            onClick={handleAddVideoFile}
-            className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg flex items-center gap-2 transition-colors shadow-md"
-          >
-            <FileVideo size={20} />
-            Add Video File
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={handleAddRtspCamera}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg flex items-center gap-2 transition-colors shadow-md"
+            >
+              <Radio size={20} />
+              Add RTSP Camera
+            </button>
+            <button
+              onClick={handleAddVideoFile}
+              className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg flex items-center gap-2 transition-colors shadow-md"
+            >
+              <FileVideo size={20} />
+              Add Video File
+            </button>
+          </div>
         </div>
 
         {/* Camera Grid */}
@@ -207,9 +259,22 @@ export function CameraList() {
 
                 {/* Camera Info */}
                 <div className="p-4">
-                  <h3 className="font-semibold text-gray-900 mb-1">
-                    {camera.name}
-                  </h3>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="font-semibold text-gray-900">
+                      {camera.name}
+                    </h3>
+                    {getSourceType(camera.rtspUrl) === 'rtsp' ? (
+                      <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs font-medium rounded flex items-center gap-1">
+                        <Radio size={12} />
+                        RTSP
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-medium rounded flex items-center gap-1">
+                        <FileVideo size={12} />
+                        VIDEO
+                      </span>
+                    )}
+                  </div>
                   <p className="text-sm text-gray-500 truncate mb-4">
                     {camera.rtspUrl}
                   </p>
@@ -291,6 +356,61 @@ export function CameraList() {
             handleEditZone(liveViewCamera.id);
           }}
         />
+      )}
+
+      {/* RTSP Camera Dialog */}
+      {showRtspDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Add RTSP Camera</h2>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Camera Name
+                </label>
+                <input
+                  type="text"
+                  value={rtspName}
+                  onChange={(e) => setRtspName(e.target.value)}
+                  placeholder="e.g., Front Door Camera"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  RTSP URL
+                </label>
+                <input
+                  type="text"
+                  value={rtspUrl}
+                  onChange={(e) => setRtspUrl(e.target.value)}
+                  placeholder="rtsp://username:password@192.168.1.100:554/stream1"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Format: rtsp://[username:password@]host[:port]/path
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => setShowRtspDialog(false)}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveRtspCamera}
+                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+              >
+                Add Camera
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
