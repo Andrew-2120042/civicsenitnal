@@ -28,6 +28,14 @@ interface DetectionResponse {
   alerts: Alert[];
 }
 
+interface Zone {
+  id: number;
+  camera_id: string;
+  zone_name: string;
+  coordinates: Array<{ x: number; y: number }>;
+  alert_type: string;
+}
+
 interface LiveCameraViewProps {
   cameraId: string;
   cameraName: string;
@@ -45,166 +53,171 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
   const { backendUrl, apiKey } = useSettingsStore();
   const [detections, setDetections] = useState<Detection[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [loadingStatus, setLoadingStatus] = useState('Initializing...');
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({
     detections: 0,
     alerts: 0,
+    fps: 0,
   });
 
-  // Draw detection overlays on canvas
-  const drawDetections = (
+  // Helper: Check if point is inside polygon (for zone detection)
+  const isPointInPolygon = (point: { x: number; y: number }, polygon: Array<{ x: number; y: number }>) => {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      const intersect = ((yi > point.y) !== (yj > point.y)) &&
+        (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+
+  // Helper: Draw bounding boxes on canvas
+  const drawBoundingBoxes = (
     ctx: CanvasRenderingContext2D,
-    detections: Detection[]
+    detections: Detection[],
+    canvasWidth: number,
+    canvasHeight: number
   ) => {
-    // Draw bounding boxes
     detections.forEach((det) => {
-      const width = det.bbox.x2 - det.bbox.x1;
-      const height = det.bbox.y2 - det.bbox.y1;
+      const { x1, y1, x2, y2 } = det.bbox;
+      const width = x2 - x1;
+      const height = y2 - y1;
 
       // Draw box
       ctx.strokeStyle = '#00ff00';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(det.bbox.x1, det.bbox.y1, width, height);
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x1, y1, width, height);
 
       // Draw label background
-      const label = `${det.class_name}: ${det.confidence.toFixed(2)}`;
-      ctx.font = '12px Arial';
+      const label = `${det.class_name}: ${(det.confidence * 100).toFixed(0)}%`;
+      ctx.font = 'bold 14px Arial';
       const metrics = ctx.measureText(label);
-      const labelHeight = 18;
+      const labelHeight = 22;
 
       ctx.fillStyle = '#00ff00';
-      ctx.fillRect(
-        det.bbox.x1,
-        det.bbox.y1 - labelHeight,
-        metrics.width + 8,
-        labelHeight
-      );
+      ctx.fillRect(x1, y1 - labelHeight, metrics.width + 12, labelHeight);
 
       // Draw label text
       ctx.fillStyle = '#000000';
-      ctx.fillText(label, det.bbox.x1 + 4, det.bbox.y1 - 5);
+      ctx.fillText(label, x1 + 6, y1 - 6);
     });
   };
 
-  // Parallel frame processing - OPTIMIZED for smooth playback
+  // Helper: Draw zones on canvas
+  const drawZones = (
+    ctx: CanvasRenderingContext2D,
+    zones: Zone[],
+    detections: Detection[]
+  ) => {
+    zones.forEach((zone) => {
+      // Check if any detection center is inside this zone
+      const isViolated = detections.some((det) => {
+        const centerX = (det.bbox.x1 + det.bbox.x2) / 2;
+        const centerY = (det.bbox.y1 + det.bbox.y2) / 2;
+        return isPointInPolygon({ x: centerX, y: centerY }, zone.coordinates);
+      });
+
+      // Draw zone polygon
+      ctx.strokeStyle = isViolated ? '#ff0000' : '#00ffff';
+      ctx.fillStyle = isViolated ? 'rgba(255, 0, 0, 0.15)' : 'rgba(0, 255, 255, 0.08)';
+      ctx.lineWidth = 2;
+
+      ctx.beginPath();
+      zone.coordinates.forEach((point, i) => {
+        if (i === 0) {
+          ctx.moveTo(point.x, point.y);
+        } else {
+          ctx.lineTo(point.x, point.y);
+        }
+      });
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fill();
+
+      // Draw zone label
+      if (zone.coordinates.length > 0) {
+        const firstPoint = zone.coordinates[0];
+        ctx.fillStyle = isViolated ? '#ff0000' : '#00ffff';
+        ctx.font = 'bold 12px Arial';
+        ctx.fillText(zone.zone_name, firstPoint.x + 5, firstPoint.y - 5);
+      }
+    });
+  };
+
+  // Load zones on mount
   useEffect(() => {
-    console.log('[LiveView] Component mounted, cameraId:', cameraId, 'backendUrl:', backendUrl);
+    const loadZones = async () => {
+      if (!backendUrl || !apiKey) return;
 
-    let mounted = true;
-    let latestFrameBase64: string | null = null;
-    let latestDetectionData: Detection[] = [];
-    let displayInterval: NodeJS.Timeout;
-    let captureInterval: NodeJS.Timeout;
-
-    // Fast display loop (10 FPS) - just displays cached frame
-    const displayFrame = () => {
-      if (!mounted || !latestFrameBase64) {
-        return;
+      try {
+        console.log('[LiveView] Loading zones for camera:', cameraId);
+        const zonesData = await invoke<Zone[]>('get_zones', {
+          cameraId,
+          apiKey,
+          backendUrl,
+        });
+        console.log('[LiveView] Loaded zones:', zonesData.length);
+        setZones(zonesData);
+      } catch (err) {
+        console.error('[LiveView] Failed to load zones:', err);
+        // Non-critical error, continue without zones
       }
-
-      const canvas = canvasRef.current;
-      if (!canvas) {
-        console.warn('[LiveView] Canvas ref not available');
-        return;
-      }
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        console.warn('[LiveView] Canvas context not available');
-        return;
-      }
-
-      const img = new Image();
-      img.src = `data:image/jpeg;base64,${latestFrameBase64}`;
-
-      img.onload = () => {
-        if (!mounted) return;
-
-        // Set canvas size to match image (only on first frame)
-        if (canvas.width === 0 || canvas.height === 0) {
-          console.log('[LiveView] Setting canvas size:', img.width, 'x', img.height);
-          canvas.width = img.width;
-          canvas.height = img.height;
-        }
-
-        // Draw image
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-        // Draw detection overlays
-        if (latestDetectionData.length > 0) {
-          drawDetections(ctx, latestDetectionData);
-        }
-      };
-
-      img.onerror = (e) => {
-        console.error('[LiveView] Image load error:', e);
-      };
     };
 
-    // Slow capture + API loop (2 FPS)
-    const captureAndProcess = async () => {
+    loadZones();
+  }, [cameraId, apiKey, backendUrl]);
+
+  // ==========================================
+  // THREE INDEPENDENT LOOPS - NON-BLOCKING ARCHITECTURE
+  // ==========================================
+  useEffect(() => {
+    console.log('[LiveView] Component mounted, cameraId:', cameraId);
+
+    let mounted = true;
+    let latestFrame: string | null = null;
+    let latestDetections: DetectionResponse | null = null;
+    let frameCount = 0;
+    let lastFpsTime = Date.now();
+
+    // ==========================================
+    // LOOP 1: FAST CAPTURE (NO API BLOCKING)
+    // ==========================================
+    // Captures frames continuously to keep RTSP connection alive
+    // NO detection API calls here - just pure frame capture
+    const captureLoop = setInterval(async () => {
+      if (!mounted) return;
+
       try {
-        console.log('[LiveView] Starting frame capture for camera:', cameraId);
-        setLoadingStatus('Capturing frame...');
+        console.log('[LiveView] Capturing frame...');
 
-        // Step 1: Capture frame from camera with timeout
-        const frameBase64 = await Promise.race([
-          invoke<string>('get_frame', { cameraId }),
-          new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('Frame capture timeout (10s)')), 10000)
-          ),
-        ]);
-
-        console.log('[LiveView] Frame captured, size:', frameBase64?.length);
+        // Just capture frame - NO API call, NO blocking
+        const frameBase64 = await invoke<string>('get_frame', {
+          cameraId,
+        });
 
         if (!mounted) return;
 
         // Cache frame for display loop
-        latestFrameBase64 = frameBase64;
+        latestFrame = frameBase64;
+        frameCount++;
 
-        console.log('[LiveView] Frame cached, starting display');
-        setLoadingStatus('Processing with AI...');
-        setIsLoading(false); // Show frame immediately, even before AI processing
-        setError(null);
+        console.log('[LiveView] Frame captured, size:', frameBase64.length);
 
-        // Step 2: Send to API in background (don't block display)
-        invoke<DetectionResponse>('send_frame_to_cloud', {
-          cameraId,
-          frameBase64,
-          apiKey,
-          backendUrl,
-        }).then((detectionData) => {
-          if (!mounted) return;
+        // Clear any previous errors
+        if (error) setError(null);
+        if (isLoading) setIsLoading(false);
 
-          console.log('[LiveView] AI processing complete, detections:', detectionData.detections.length);
-
-          // Update cached detections
-          latestDetectionData = detectionData.detections;
-
-          // Update state
-          setDetections(detectionData.detections);
-          setAlerts(detectionData.alerts);
-          setStats({
-            detections: detectionData.detections.length,
-            alerts: detectionData.alerts.length,
-          });
-
-          // Handle alerts - show notifications
-          if (detectionData.alerts.length > 0) {
-            detectionData.alerts.forEach((alert) => {
-              sendNotification({
-                title: '🚨 CivicSentinel Alert',
-                body: `${alert.alert_type} detected at ${cameraName} - Zone: ${alert.zone_name}`,
-              });
-            });
-          }
-        }).catch((err) => {
-          if (mounted) {
-            console.error('[LiveView] API error:', err);
-          }
-        });
+        // Update FPS counter
+        const now = Date.now();
+        if (now - lastFpsTime >= 1000) {
+          setStats((prev) => ({ ...prev, fps: frameCount }));
+          frameCount = 0;
+          lastFpsTime = now;
+        }
       } catch (err) {
         if (mounted) {
           console.error('[LiveView] Capture error:', err);
@@ -213,24 +226,117 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           setIsLoading(false);
         }
       }
-    };
+    }, 1000); // Every 1 second - keeps RTSP connection alive
 
-    // Initial capture
-    captureAndProcess();
+    // ==========================================
+    // LOOP 2: SLOW AI DETECTION (BACKGROUND)
+    // ==========================================
+    // Sends frames to backend for AI processing
+    // Runs independently - can be slow, doesn't block video
+    const detectionLoop = setInterval(async () => {
+      if (!mounted || !latestFrame) return;
 
-    // Start display loop at 10 FPS (100ms interval)
-    displayInterval = setInterval(displayFrame, 100);
+      try {
+        console.log('[LiveView] Sending frame to AI backend...');
 
-    // Start capture loop at 2 FPS (500ms interval)
-    captureInterval = setInterval(captureAndProcess, 500);
+        // Send to backend for detection (can take 3-10 seconds, doesn't matter)
+        const detectionData = await invoke<DetectionResponse>('send_frame_to_cloud', {
+          cameraId,
+          frameBase64: latestFrame, // Use cached frame from capture loop
+          apiKey,
+          backendUrl,
+        });
 
+        if (!mounted) return;
+
+        console.log('[LiveView] AI detection complete:', detectionData.detections.length, 'detections');
+
+        // Cache detection results for display loop
+        latestDetections = detectionData;
+
+        // Update state
+        setDetections(detectionData.detections);
+        setAlerts(detectionData.alerts);
+        setStats((prev) => ({
+          ...prev,
+          detections: detectionData.detections.length,
+          alerts: detectionData.alerts.length,
+        }));
+
+        // Handle alerts - show notifications
+        if (detectionData.alerts.length > 0) {
+          detectionData.alerts.forEach((alert) => {
+            sendNotification({
+              title: '🚨 CivicSentinel Alert',
+              body: `${alert.alert_type} detected at ${cameraName} - Zone: ${alert.zone_name}`,
+            });
+          });
+        }
+      } catch (err) {
+        if (mounted) {
+          console.warn('[LiveView] Detection API error (non-critical):', err);
+          // Detection errors don't affect video display
+        }
+      }
+    }, 5000); // Every 5 seconds - independent of capture
+
+    // ==========================================
+    // LOOP 3: FAST DISPLAY RENDERING
+    // ==========================================
+    // Renders latest frame + overlays at high FPS
+    const displayLoop = setInterval(() => {
+      if (!mounted || !latestFrame) return;
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const img = new Image();
+      img.src = `data:image/jpeg;base64,${latestFrame}`;
+
+      img.onload = () => {
+        if (!mounted) return;
+
+        // Set canvas size on first frame
+        if (canvas.width === 0 || canvas.height === 0) {
+          console.log('[LiveView] Setting canvas size:', img.width, 'x', img.height);
+          canvas.width = img.width;
+          canvas.height = img.height;
+        }
+
+        // Clear canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Draw video frame
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // Draw zones first (behind detections)
+        if (zones.length > 0) {
+          drawZones(ctx, zones, latestDetections?.detections || []);
+        }
+
+        // Draw detection bounding boxes on top
+        if (latestDetections?.detections && latestDetections.detections.length > 0) {
+          drawBoundingBoxes(ctx, latestDetections.detections, canvas.width, canvas.height);
+        }
+      };
+
+      img.onerror = (e) => {
+        console.error('[LiveView] Image load error:', e);
+      };
+    }, 100); // 10 FPS - smooth display
+
+    // Cleanup
     return () => {
-      console.log('[LiveView] Component unmounting, cleaning up intervals');
+      console.log('[LiveView] Component unmounting, cleaning up loops');
       mounted = false;
-      if (displayInterval) clearInterval(displayInterval);
-      if (captureInterval) clearInterval(captureInterval);
+      clearInterval(captureLoop);
+      clearInterval(detectionLoop);
+      clearInterval(displayLoop);
     };
-  }, [cameraId, cameraName, apiKey, backendUrl]);
+  }, [cameraId, cameraName, apiKey, backendUrl, zones, error, isLoading]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
@@ -242,6 +348,9 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
             <h2 className="text-xl font-semibold text-white">
               Live View: {cameraName}
             </h2>
+            <div className="text-sm text-gray-400">
+              {stats.fps} FPS
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -268,8 +377,8 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           {isLoading && !error && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/95">
               <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-purple-500 mb-6"></div>
-              <p className="text-white text-xl font-semibold mb-2">{loadingStatus}</p>
-              <p className="text-gray-400 text-sm">This may take 5-10 seconds</p>
+              <p className="text-white text-xl font-semibold mb-2">Connecting to camera...</p>
+              <p className="text-gray-400 text-sm">This may take a few seconds</p>
               <div className="mt-4 text-gray-500 text-xs">
                 Camera: {cameraId}
               </div>
@@ -280,7 +389,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
               <svg className="w-16 h-16 text-red-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
               </svg>
-              <p className="text-white text-xl font-semibold mb-2">❌ Failed to load camera</p>
+              <p className="text-white text-xl font-semibold mb-2">Failed to load camera</p>
               <p className="text-red-200 text-sm mb-6 max-w-md text-center">{error}</p>
               <button
                 onClick={() => window.location.reload()}
@@ -293,7 +402,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           <canvas
             ref={canvasRef}
             className="w-full h-auto max-h-[70vh] mx-auto"
-            style={{ display: isLoading && !error ? 'none' : 'block' }}
+            style={{ display: isLoading || error ? 'none' : 'block' }}
           />
         </div>
 
@@ -301,7 +410,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
         <div className="flex items-center justify-between p-4 border-t border-gray-700 bg-gray-800">
           <div className="flex gap-6">
             <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-green-500 rounded-full" />
+              <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
               <span className="text-white text-sm">
                 Detections: {stats.detections}
               </span>
@@ -314,6 +423,11 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
                 </span>
               </div>
             )}
+            <div className="flex items-center gap-2">
+              <span className="text-gray-400 text-sm">
+                Zones: {zones.length}
+              </span>
+            </div>
           </div>
 
           <div className="flex gap-2">
@@ -347,7 +461,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
               >
                 <span className="text-red-500">⚠️</span>
                 <span>
-                  {alert.alert_type} in {alert.zone_name} (confidence: {alert.confidence.toFixed(2)})
+                  {alert.alert_type} in {alert.zone_name} (confidence: {(alert.confidence * 100).toFixed(0)}%)
                 </span>
               </div>
             ))}
