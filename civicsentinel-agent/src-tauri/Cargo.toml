@@ -1,0 +1,27 @@
+[package]
+name = "civicsentinel-agent"
+version = "0.1.0"
+description = "CivicSentinel Desktop Agent"
+authors = ["CivicSentinel Team"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.6", features = ["tray-icon"] }
+tauri-plugin-notification = "2.0.0"
+tauri-plugin-shell = "2.0.1"
+tauri-plugin-fs = "2.0.1"
+tauri-plugin-dialog = "2.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["multipart", "json", "blocking"] }
+image = "0.25"
+local-ip-address = "0.6"
+base64 = "0.22"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

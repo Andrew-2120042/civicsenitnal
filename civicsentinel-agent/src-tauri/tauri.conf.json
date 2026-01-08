@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CivicSentinel Agent",
+  "version": "0.1.0",
+  "identifier": "com.civicsentinel.agent",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png"
+    ]
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CivicSentinel Agent",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "main-capability",
+          "windows": ["main"],
+          "permissions": [
+            "notification:default",
+            "notification:allow-is-permission-granted",
+            "notification:allow-request-permission",
+            "notification:allow-notify",
+            "notification:allow-register-action-types",
+            "notification:allow-register-listener",
+            "notification:allow-cancel",
+            "dialog:default",
+            "dialog:allow-open",
+            "dialog:allow-message",
+            "dialog:allow-save",
+            "dialog:allow-ask"
+          ]
+        }
+      ]
+    },
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/icon.png"
+    },
+    "withGlobalTauri": true
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    },
+    "fs": {
+      "requireLiteralLeadingDot": false
+    }
+  }
+}

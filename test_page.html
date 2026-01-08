@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CivicSentinel API Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .status.healthy {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .endpoint {
+            background: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .endpoint h3 {
+            margin-top: 0;
+            color: #3498db;
+        }
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+        .response {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            display: none;
+        }
+        .response.show {
+            display: block;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        .input-group input, .input-group textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .success { color: #27ae60; }
+        .error-text { color: #e74c3c; }
+        .links {
+            background: #e8f4f8;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .links a {
+            color: #3498db;
+            text-decoration: none;
+            margin-right: 15px;
+            font-weight: 500;
+        }
+        .links a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 CivicSentinel API Test Dashboard</h1>
+
+        <div class="links">
+            <strong>Quick Links:</strong>
+            <a href="http://localhost:8000/docs" target="_blank">📚 API Docs</a>
+            <a href="http://localhost:8000/redoc" target="_blank">📖 ReDoc</a>
+            <a href="http://localhost:8000/" target="_blank">🏠 API Root</a>
+        </div>
+
+        <div id="healthStatus"></div>
+
+        <!-- Health Check -->
+        <div class="endpoint">
+            <h3>1️⃣ Health Check</h3>
+            <p>Check if the API and YOLO model are running</p>
+            <button onclick="checkHealth()">🔍 Check Health</button>
+            <div id="healthResponse" class="response"></div>
+        </div>
+
+        <!-- Create Zone -->
+        <div class="endpoint">
+            <h3>2️⃣ Create Restricted Zone</h3>
+            <p>Define a restricted area for your camera</p>
+            <div class="input-group">
+                <label>Camera ID:</label>
+                <input type="text" id="cameraId" value="demo_camera_001" placeholder="e.g., cam_001">
+            </div>
+            <div class="input-group">
+                <label>Zone Name:</label>
+                <input type="text" id="zoneName" value="Restricted Area" placeholder="e.g., Restricted Area">
+            </div>
+            <div class="input-group">
+                <label>Coordinates (JSON - polygon points [x,y]):</label>
+                <textarea id="zoneCoords" rows="3">[[100,100],[500,100],[500,400],[100,400]]</textarea>
+            </div>
+            <button onclick="createZone()">➕ Create Zone</button>
+            <div id="zoneResponse" class="response"></div>
+        </div>
+
+        <!-- Get Zones -->
+        <div class="endpoint">
+            <h3>3️⃣ Get All Zones</h3>
+            <p>View all zones for a camera</p>
+            <div class="input-group">
+                <label>Camera ID:</label>
+                <input type="text" id="getCameraId" value="demo_camera_001">
+            </div>
+            <button onclick="getZones()">📋 Get Zones</button>
+            <div id="getZonesResponse" class="response"></div>
+        </div>
+
+        <!-- Get Alerts -->
+        <div class="endpoint">
+            <h3>4️⃣ View Alert History</h3>
+            <p>See all detection alerts</p>
+            <button onclick="getAlerts()">🚨 Get Alerts</button>
+            <div id="alertsResponse" class="response"></div>
+        </div>
+
+        <!-- Upload Image -->
+        <div class="endpoint">
+            <h3>5️⃣ Upload Image for Detection</h3>
+            <p>Upload an image to detect persons (use the test image)</p>
+            <div class="input-group">
+                <label>Camera ID:</label>
+                <input type="text" id="detectCameraId" value="demo_camera_001">
+            </div>
+            <div class="input-group">
+                <label>Image File:</label>
+                <input type="file" id="imageFile" accept="image/*">
+            </div>
+            <button onclick="detectImage()">🔎 Detect Persons</button>
+            <div id="detectResponse" class="response"></div>
+        </div>
+
+        <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 4px;">
+            <strong>💡 Tip:</strong> API Key is already configured as: <code>test_api_key_123</code>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api/v1';
+        const API_KEY = 'test_api_key_123';
+
+        // Auto check health on load
+        window.onload = () => {
+            checkHealth();
+        };
+
+        async function checkHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+
+                const statusDiv = document.getElementById('healthStatus');
+                if (data.status === 'healthy') {
+                    statusDiv.innerHTML = `<div class="status healthy">✅ API Status: ${data.status.toUpperCase()} | Model: ${data.model_loaded ? 'Loaded ✓' : 'Not Loaded ✗'} | Database: ${data.database_connected ? 'Connected ✓' : 'Disconnected ✗'}</div>`;
+                } else {
+                    statusDiv.innerHTML = `<div class="status error">❌ API Status: ${data.status.toUpperCase()}</div>`;
+                }
+
+                showResponse('healthResponse', data, true);
+            } catch (error) {
+                document.getElementById('healthStatus').innerHTML = '<div class="status error">❌ API Not Reachable</div>';
+                showResponse('healthResponse', { error: error.message }, false);
+            }
+        }
+
+        async function createZone() {
+            const cameraId = document.getElementById('cameraId').value;
+            const zoneName = document.getElementById('zoneName').value;
+            const coordsText = document.getElementById('zoneCoords').value;
+
+            try {
+                const coordinates = JSON.parse(coordsText);
+
+                const response = await fetch(`${API_BASE}/cameras/${cameraId}/zones`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: zoneName,
+                        coordinates: coordinates,
+                        alert_type: 'intrusion',
+                        active: true
+                    })
+                });
+
+                const data = await response.json();
+                showResponse('zoneResponse', data, response.ok);
+            } catch (error) {
+                showResponse('zoneResponse', { error: error.message }, false);
+            }
+        }
+
+        async function getZones() {
+            const cameraId = document.getElementById('getCameraId').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/cameras/${cameraId}/zones`, {
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`
+                    }
+                });
+
+                const data = await response.json();
+                showResponse('getZonesResponse', data, response.ok);
+            } catch (error) {
+                showResponse('getZonesResponse', { error: error.message }, false);
+            }
+        }
+
+        async function getAlerts() {
+            try {
+                const response = await fetch(`${API_BASE}/alerts?page=1&page_size=20`, {
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`
+                    }
+                });
+
+                const data = await response.json();
+                showResponse('alertsResponse', data, response.ok);
+            } catch (error) {
+                showResponse('alertsResponse', { error: error.message }, false);
+            }
+        }
+
+        async function detectImage() {
+            const cameraId = document.getElementById('detectCameraId').value;
+            const fileInput = document.getElementById('imageFile');
+
+            if (!fileInput.files.length) {
+                alert('Please select an image file first!');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image', fileInput.files[0]);
+            formData.append('camera_id', cameraId);
+
+            try {
+                const response = await fetch(`${API_BASE}/detect`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`
+                    },
+                    body: formData
+                });
+
+                const data = await response.json();
+                showResponse('detectResponse', data, response.ok);
+            } catch (error) {
+                showResponse('detectResponse', { error: error.message }, false);
+            }
+        }
+
+        function showResponse(elementId, data, success) {
+            const element = document.getElementById(elementId);
+            const formatted = JSON.stringify(data, null, 2);
+            const statusText = success ? '<span class="success">✓ SUCCESS</span>' : '<span class="error-text">✗ ERROR</span>';
+            element.innerHTML = `${statusText}\n\n${formatted}`;
+            element.classList.add('show');
+        }
+    </script>
+</body>
+</html>
