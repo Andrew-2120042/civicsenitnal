@@ -55,6 +55,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isDetecting, setIsDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({
     detections: 0,
@@ -172,44 +173,55 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
   }, [cameraId, apiKey, backendUrl]);
 
   // ==========================================
-  // THREE INDEPENDENT LOOPS - NON-BLOCKING ARCHITECTURE
+  // THREE INDEPENDENT LOOPS - OPTIMIZED FOR FAST MOTION DETECTION
   // ==========================================
   useEffect(() => {
     console.log('[LiveView] Component mounted, cameraId:', cameraId);
 
     let mounted = true;
     let latestFrame: string | null = null;
+    let previousFrame: string | null = null; // For motion detection
     let latestDetections: DetectionResponse | null = null;
     let frameCount = 0;
     let lastFpsTime = Date.now();
+    let detectionQueue: string[] = []; // Queue for parallel processing
+    let detecting = false;
+
+    // Reset loading state on mount
+    setIsLoading(true);
 
     // ==========================================
-    // LOOP 1: FAST CAPTURE (NO API BLOCKING)
+    // LOOP 1: FAST CAPTURE (2 FPS - OPTIMIZED)
     // ==========================================
-    // Captures frames continuously to keep RTSP connection alive
-    // NO detection API calls here - just pure frame capture
     const captureLoop = setInterval(async () => {
       if (!mounted) return;
 
       try {
         console.log('[LiveView] Capturing frame...');
 
-        // Just capture frame - NO API call, NO blocking
+        // Capture frame - NO API call, NO blocking
         const frameBase64 = await invoke<string>('get_frame', {
           cameraId,
         });
 
         if (!mounted) return;
 
-        // Cache frame for display loop
+        // Cache frame for display and detection loops
         latestFrame = frameBase64;
         frameCount++;
 
+        // Add to detection queue (max 3 frames to prevent overload)
+        if (detectionQueue.length < 3) {
+          detectionQueue.push(frameBase64);
+        }
+
         console.log('[LiveView] Frame captured, size:', frameBase64.length);
 
-        // Clear any previous errors
-        if (error) setError(null);
-        if (isLoading) setIsLoading(false);
+        // Hide loading on FIRST successful frame
+        if (frameCount === 1) {
+          setIsLoading(false);
+          setError(null);
+        }
 
         // Update FPS counter
         const now = Date.now();
@@ -223,26 +235,37 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           console.error('[LiveView] Capture error:', err);
           const errorMsg = err instanceof Error ? err.message : 'Failed to capture frame';
           setError(errorMsg);
-          setIsLoading(false);
+          // Don't set loading on error - keep showing last frame
         }
       }
-    }, 1000); // Every 1 second - keeps RTSP connection alive
+    }, 500); // FASTER: Every 0.5 seconds (2 FPS)
 
     // ==========================================
-    // LOOP 2: SLOW AI DETECTION (BACKGROUND)
+    // LOOP 2: FAST AI DETECTION (2s interval + queue processing)
     // ==========================================
-    // Sends frames to backend for AI processing
-    // Runs independently - can be slow, doesn't block video
     const detectionLoop = setInterval(async () => {
-      if (!mounted || !latestFrame) return;
+      if (!mounted || detecting || detectionQueue.length === 0) return;
+
+      detecting = true;
+      const frame = detectionQueue.shift()!;
+
+      // Skip detection if frame hasn't changed (no motion)
+      if (frame === previousFrame) {
+        console.log('[LiveView] No motion detected, skipping AI');
+        detecting = false;
+        return;
+      }
+
+      previousFrame = frame;
 
       try {
         console.log('[LiveView] Sending frame to AI backend...');
+        setIsDetecting(true);
 
-        // Send to backend for detection (can take 3-10 seconds, doesn't matter)
+        // Send to backend for detection (optimized for faster processing)
         const detectionData = await invoke<DetectionResponse>('send_frame_to_cloud', {
           cameraId,
-          frameBase64: latestFrame, // Use cached frame from capture loop
+          frameBase64: frame,
           apiKey,
           backendUrl,
         });
@@ -277,13 +300,17 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           console.warn('[LiveView] Detection API error (non-critical):', err);
           // Detection errors don't affect video display
         }
+      } finally {
+        if (mounted) {
+          setIsDetecting(false);
+          detecting = false;
+        }
       }
-    }, 5000); // Every 5 seconds - independent of capture
+    }, 2000); // FASTER: Every 2 seconds (was 5 seconds)
 
     // ==========================================
-    // LOOP 3: FAST DISPLAY RENDERING
+    // LOOP 3: FAST DISPLAY RENDERING (10 FPS)
     // ==========================================
-    // Renders latest frame + overlays at high FPS
     const displayLoop = setInterval(() => {
       if (!mounted || !latestFrame) return;
 
@@ -336,7 +363,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
       clearInterval(detectionLoop);
       clearInterval(displayLoop);
     };
-  }, [cameraId, cameraName, apiKey, backendUrl, zones, error, isLoading]);
+  }, [cameraId, cameraName, apiKey, backendUrl, zones]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
@@ -351,6 +378,11 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
             <div className="text-sm text-gray-400">
               {stats.fps} FPS
             </div>
+            {isDetecting && (
+              <div className="bg-purple-500/20 px-3 py-1 rounded">
+                <span className="text-purple-400 text-sm">🤖 Detecting...</span>
+              </div>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -378,7 +410,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/95">
               <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-purple-500 mb-6"></div>
               <p className="text-white text-xl font-semibold mb-2">Connecting to camera...</p>
-              <p className="text-gray-400 text-sm">This may take a few seconds</p>
+              <p className="text-gray-400 text-sm">Waiting for first frame</p>
               <div className="mt-4 text-gray-500 text-xs">
                 Camera: {cameraId}
               </div>
