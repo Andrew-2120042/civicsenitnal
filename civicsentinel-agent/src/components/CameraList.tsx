@@ -90,6 +90,23 @@ export function CameraList() {
           status: 'disconnected',
           isMonitoring: false,
         });
+
+        // Auto-connect video files immediately
+        setTimeout(async () => {
+          try {
+            await invoke('connect_camera', {
+              cameraId: id,
+              rtspUrl: filePath,
+              username: null,
+              password: null,
+            });
+            updateCamera(id, { status: 'connected' });
+            console.log('[VideoUpload] Auto-connected video file:', fileName);
+          } catch (error) {
+            console.error('[VideoUpload] Failed to auto-connect video file:', error);
+            updateCamera(id, { status: 'error' });
+          }
+        }, 100);
       }
     } catch (error) {
       console.error('Failed to select video file:', error);

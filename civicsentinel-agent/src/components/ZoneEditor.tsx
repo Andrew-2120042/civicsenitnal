@@ -35,6 +35,18 @@ export function ZoneEditor({ cameraId, frameBase64, onClose }: ZoneEditorProps) 
     loadZones();
   }, [cameraId]);
 
+  // ESC key to close
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
   // Draw on canvas
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -366,7 +378,15 @@ export function ZoneEditor({ cameraId, frameBase64, onClose }: ZoneEditorProps) 
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div
+      className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
+      onClick={(e) => {
+        // Close if clicking on backdrop (not the modal content)
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+    >
       <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="bg-gradient-to-r from-purple-600 to-indigo-600 text-white px-6 py-4 flex justify-between items-center">
@@ -376,9 +396,11 @@ export function ZoneEditor({ cameraId, frameBase64, onClose }: ZoneEditorProps) 
           </div>
           <button
             onClick={onClose}
-            className="hover:bg-white/20 rounded p-2 transition-colors"
+            className="flex items-center gap-2 bg-white/10 hover:bg-white/20 border-2 border-white/30 hover:border-white/50 rounded-lg px-4 py-2 transition-all font-semibold shadow-lg hover:shadow-xl"
+            title="Close Zone Editor"
           >
-            <X size={24} />
+            <X size={20} />
+            <span>Close</span>
           </button>
         </div>
 
@@ -571,6 +593,17 @@ export function ZoneEditor({ cameraId, frameBase64, onClose }: ZoneEditorProps) 
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* Close Editor Button */}
+            <div className="border-t border-gray-200 pt-4 mt-4">
+              <button
+                onClick={onClose}
+                className="w-full bg-gray-700 hover:bg-gray-800 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors shadow-md hover:shadow-lg"
+              >
+                <X size={20} />
+                Close Zone Editor
+              </button>
             </div>
           </div>
         </div>

@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
-use std::process::Command;
-use std::sync::Arc;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::{BufReader, Read};
+use std::thread;
+use std::collections::VecDeque;
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +30,7 @@ pub struct CameraHandle {
     pub username: Option<String>,
     pub password: Option<String>,
     pub is_connected: bool,
+    pub persistent_capture: Option<Arc<StdMutex<PersistentCapture>>>,
 }
 
 /// Scan local network for IP cameras
@@ -210,6 +215,7 @@ pub async fn connect(source_url: &str, username: Option<String>, password: Optio
         username,
         password,
         is_connected: true,
+        persistent_capture: None,
     })
 }
 
@@ -221,6 +227,291 @@ fn get_ffmpeg_path() -> &'static str {
         "/usr/local/bin/ffmpeg"
     } else {
         "ffmpeg" // Fallback to PATH
+    }
+}
+
+/// Safe JPEG frame extractor - detects SOI (FFD8) and EOI (FFD9)
+fn extract_jpeg_frames(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+
+    loop {
+        // Find SOI marker (0xFF 0xD8)
+        let soi_pos = buffer.windows(2).position(|w| w == [0xFF, 0xD8]);
+
+        if soi_pos.is_none() {
+            // No SOI found, discard everything before next check
+            if buffer.len() > 1 {
+                buffer.drain(0..buffer.len() - 1);
+            }
+            break;
+        }
+
+        let soi = soi_pos.unwrap();
+
+        // Find EOI marker (0xFF 0xD9) after SOI
+        let eoi_pos = buffer[soi..].windows(2).position(|w| w == [0xFF, 0xD9]);
+
+        if eoi_pos.is_none() {
+            // SOI found but no EOI yet, keep buffer and wait for more data
+            break;
+        }
+
+        let eoi = soi + eoi_pos.unwrap() + 2; // +2 to include EOI marker
+
+        // Extract complete JPEG frame
+        let frame = buffer[soi..eoi].to_vec();
+        frames.push(frame);
+
+        // Remove processed frame from buffer
+        buffer.drain(0..eoi);
+    }
+
+    frames
+}
+
+/// Persistent capture process - one FFmpeg process per camera
+pub struct PersistentCapture {
+    process: Child,
+    frame_buffer: Arc<StdMutex<VecDeque<Vec<u8>>>>,
+    is_running: Arc<AtomicBool>,
+    _reader_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for PersistentCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersistentCapture")
+            .field("process_id", &self.process.id())
+            .field("is_running", &self.is_running.load(Ordering::Relaxed))
+            .field("frame_count", &self.get_frame_count())
+            .finish()
+    }
+}
+
+impl PersistentCapture {
+    pub fn new(
+        source_url: String,
+        source_type: String,
+        username: Option<String>,
+        password: Option<String>
+    ) -> Result<Self, String> {
+        let ffmpeg_path = get_ffmpeg_path();
+
+        // Build authenticated URL if credentials provided
+        let auth_url = if let (Some(user), Some(pass)) = (username.as_ref(), password.as_ref()) {
+            if let Some(pos) = source_url.find("://") {
+                let protocol = &source_url[..pos+3];
+                let rest = &source_url[pos+3..];
+                format!("{}{}:{}@{}", protocol, user, pass, rest)
+            } else {
+                source_url.clone()
+            }
+        } else {
+            source_url.clone()
+        };
+
+        println!("[PersistentCapture] ========================================");
+        println!("[PersistentCapture] Starting FFmpeg for camera");
+        println!("[PersistentCapture] FFmpeg path: {}", ffmpeg_path);
+        println!("[PersistentCapture] Source URL: {}", source_url);
+        println!("[PersistentCapture] Source type: {}", source_type);
+        println!("[PersistentCapture] Auth URL: {}", auth_url);
+
+        // Build FFmpeg arguments (PRODUCTION-GRADE, CPU-SAFE)
+        let mut args = vec![];
+
+        // Source-specific args
+        if source_type == "rtsp" {
+            args.extend(vec![
+                "-rtsp_transport".to_string(),
+                "tcp".to_string(),
+            ]);
+        } else if source_type == "file" {
+            // Loop video files infinitely
+            args.extend(vec![
+                "-stream_loop".to_string(),
+                "-1".to_string(),  // -1 means infinite loop
+            ]);
+        }
+
+        // Core args (NO -re flag for RTSP!)
+        args.extend(vec![
+            "-i".to_string(),
+            auth_url,
+            "-vf".to_string(),
+            "scale=960:-1".to_string(),     // CPU-safe resolution
+            "-r".to_string(),
+            // Video files: 15 FPS for smooth playback
+            // RTSP/HTTP: 5 FPS for efficiency
+            if source_type == "file" { "15".to_string() } else { "5".to_string() },
+            "-f".to_string(),
+            "image2pipe".to_string(),
+            "-vcodec".to_string(),
+            "mjpeg".to_string(),
+            "-q:v".to_string(),
+            "4".to_string(),                // CPU-safe quality (4, not 2)
+            "-".to_string(),
+        ]);
+
+        println!("[PersistentCapture] Full command: {} {:?}", ffmpeg_path, args);
+        println!("[PersistentCapture] ========================================");
+
+        // Spawn FFmpeg with piped stdout AND stderr
+        let mut child = Command::new(&ffmpeg_path)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())  // CHANGED from null to piped for debugging
+            .spawn()
+            .map_err(|e| format!("Failed to spawn FFmpeg: {}", e))?;
+
+        let stdout = child.stdout.take()
+            .ok_or("Failed to capture FFmpeg stdout")?;
+
+        println!("[PersistentCapture] ✅ FFmpeg stdout captured successfully");
+
+        // Capture stderr for debugging
+        let stderr = child.stderr.take()
+            .ok_or("Failed to capture FFmpeg stderr")?;
+
+        // Spawn thread to log FFmpeg errors/info
+        thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    println!("[FFmpeg stderr] {}", line);
+                }
+            }
+        });
+
+        // Shared state
+        let frame_buffer = Arc::new(StdMutex::new(VecDeque::with_capacity(5)));
+        let is_running = Arc::new(AtomicBool::new(true));
+
+        // Clone for thread
+        let buffer_clone = Arc::clone(&frame_buffer);
+        let running_clone = Arc::clone(&is_running);
+
+        // Spawn background reader thread
+        let reader_handle = thread::spawn(move || {
+            println!("[PersistentCapture] Reader thread started");
+
+            let mut reader = BufReader::new(stdout);
+            let mut raw_buffer = Vec::with_capacity(1024 * 1024); // 1MB buffer
+            let mut read_buf = [0u8; 8192]; // 8KB read chunks
+
+            let mut frame_count = 0;
+
+            let mut total_bytes_read = 0;
+            let mut read_count = 0;
+
+            while running_clone.load(Ordering::Relaxed) {
+                // Read from FFmpeg stdout
+                match reader.read(&mut read_buf) {
+                    Ok(0) => {
+                        println!("[PersistentCapture] FFmpeg stream ended (total bytes: {}, reads: {})",
+                            total_bytes_read, read_count);
+                        break;
+                    }
+                    Ok(n) => {
+                        read_count += 1;
+                        total_bytes_read += n;
+
+                        if read_count <= 5 || read_count % 100 == 0 {
+                            println!("[PersistentCapture] Read {} bytes from FFmpeg (total: {} bytes, {} reads)",
+                                n, total_bytes_read, read_count);
+                        }
+
+                        // Append to buffer
+                        raw_buffer.extend_from_slice(&read_buf[0..n]);
+
+                        if read_count <= 3 {
+                            println!("[PersistentCapture] Raw buffer size: {} bytes", raw_buffer.len());
+                            if raw_buffer.len() >= 10 {
+                                println!("[PersistentCapture] First 10 bytes: {:02X?}", &raw_buffer[0..10]);
+                            }
+                        }
+
+                        // Extract complete JPEG frames using SAFE parser
+                        let frames = extract_jpeg_frames(&mut raw_buffer);
+
+                        if read_count <= 5 || !frames.is_empty() {
+                            println!("[PersistentCapture] Extracted {} frames from buffer (buffer remaining: {} bytes)",
+                                frames.len(), raw_buffer.len());
+                        }
+
+                        if !frames.is_empty() {
+                            let mut buffer = buffer_clone.lock().unwrap();
+
+                            for frame in frames {
+                                frame_count += 1;
+
+                                if frame_count <= 3 {
+                                    println!("[PersistentCapture] Frame {} size: {} bytes", frame_count, frame.len());
+                                }
+
+                                // Add to buffer (keep last 5 frames)
+                                buffer.push_back(frame);
+                                if buffer.len() > 5 {
+                                    buffer.pop_front();
+                                }
+
+                                if frame_count % 50 == 0 {
+                                    println!("[PersistentCapture] Captured {} frames, buffer size: {}",
+                                        frame_count, buffer.len());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("[PersistentCapture] Read error: {} (total bytes: {}, reads: {})",
+                            e, total_bytes_read, read_count);
+                        break;
+                    }
+                }
+            }
+
+            println!("[PersistentCapture] Reader thread exiting (total frames: {})", frame_count);
+        });
+
+        println!("[PersistentCapture] Started successfully");
+
+        Ok(Self {
+            process: child,
+            frame_buffer,
+            is_running,
+            _reader_handle: Some(reader_handle),
+        })
+    }
+
+    pub fn get_frame(&self) -> Result<Vec<u8>, String> {
+        let buffer = self.frame_buffer.lock().unwrap();
+
+        // Return most recent frame
+        buffer.back()
+            .cloned()
+            .ok_or_else(|| "No frames available yet".to_string())
+    }
+
+    pub fn get_frame_count(&self) -> usize {
+        let buffer = self.frame_buffer.lock().unwrap();
+        buffer.len()
+    }
+
+    pub fn stop(&mut self) -> Result<(), String> {
+        println!("[PersistentCapture] Stopping...");
+
+        // Signal thread to stop
+        self.is_running.store(false, Ordering::Relaxed);
+
+        // Kill FFmpeg process
+        self.process.kill()
+            .map_err(|e| format!("Failed to kill FFmpeg: {}", e))?;
+
+        // Wait for process
+        let _ = self.process.wait();
+
+        println!("[PersistentCapture] Stopped");
+        Ok(())
     }
 }
 

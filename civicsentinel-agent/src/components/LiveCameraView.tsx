@@ -191,14 +191,12 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
     setIsLoading(true);
 
     // ==========================================
-    // LOOP 1: FAST CAPTURE (2 FPS - OPTIMIZED)
+    // LOOP 1: SMOOTH CAPTURE (15 FPS for videos, 5 FPS for cameras)
     // ==========================================
     const captureLoop = setInterval(async () => {
       if (!mounted) return;
 
       try {
-        console.log('[LiveView] Capturing frame...');
-
         // Capture frame - NO API call, NO blocking
         const frameBase64 = await invoke<string>('get_frame', {
           cameraId,
@@ -215,12 +213,11 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           detectionQueue.push(frameBase64);
         }
 
-        console.log('[LiveView] Frame captured, size:', frameBase64.length);
-
         // Hide loading on FIRST successful frame
         if (frameCount === 1) {
           setIsLoading(false);
           setError(null);
+          console.log('[LiveView] First frame captured, size:', frameBase64.length);
         }
 
         // Update FPS counter
@@ -238,7 +235,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           // Don't set loading on error - keep showing last frame
         }
       }
-    }, 500); // FASTER: Every 0.5 seconds (2 FPS)
+    }, 66); // SMOOTH: Every 66ms (~15 FPS for smooth video playback)
 
     // ==========================================
     // LOOP 2: FAST AI DETECTION (2s interval + queue processing)
@@ -309,7 +306,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
     }, 2000); // FASTER: Every 2 seconds (was 5 seconds)
 
     // ==========================================
-    // LOOP 3: FAST DISPLAY RENDERING (10 FPS)
+    // LOOP 3: SMOOTH DISPLAY RENDERING (15 FPS)
     // ==========================================
     const displayLoop = setInterval(() => {
       if (!mounted || !latestFrame) return;
@@ -353,7 +350,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
       img.onerror = (e) => {
         console.error('[LiveView] Image load error:', e);
       };
-    }, 100); // 10 FPS - smooth display
+    }, 66); // 15 FPS - smooth video playback
 
     // Cleanup
     return () => {

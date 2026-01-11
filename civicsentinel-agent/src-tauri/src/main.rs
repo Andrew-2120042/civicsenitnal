@@ -58,11 +58,37 @@ async fn connect_camera(
 ) -> Result<(), String> {
     println!("[Rust] Connecting camera: {}", camera_id);
 
-    let handle = camera::connect(&rtsp_url, username, password).await?;
+    let mut handle = camera::connect(&rtsp_url, username.clone(), password.clone()).await?;
+
+    // Determine source type
+    let source_type = if rtsp_url.starts_with("rtsp://") || rtsp_url.starts_with("rtsps://") {
+        "rtsp".to_string()
+    } else if rtsp_url.starts_with("http://") || rtsp_url.starts_with("https://") {
+        "http".to_string()
+    } else {
+        "file".to_string()
+    };
+
+    println!("[Rust] Source type: {}", source_type);
+
+    // Start persistent capture
+    let persistent_capture = camera::PersistentCapture::new(
+        rtsp_url.clone(),
+        source_type.clone(),
+        username.clone(),
+        password.clone(),
+    )?;
+
+    println!("[Rust] ✅ Persistent capture started for {}", camera_id);
+
+    // Store persistent capture in handle
+    handle.persistent_capture = Some(Arc::new(std::sync::Mutex::new(persistent_capture)));
 
     cameras.lock()
         .map_err(|e| format!("Lock error: {}", e))?
-        .insert(camera_id, handle);
+        .insert(camera_id.clone(), handle);
+
+    println!("[Rust] ✅ Camera {} connected and ready", camera_id);
 
     Ok(())
 }
@@ -72,21 +98,25 @@ async fn get_frame(
     camera_id: String,
     cameras: State<'_, CameraMap>,
 ) -> Result<String, String> {
-    // Clone the handle while holding the lock, then drop the lock before await
-    let handle = {
-        let cameras_lock = cameras.lock()
-            .map_err(|e| format!("Lock error: {}", e))?;
+    // Get frame from persistent capture
+    let cameras_lock = cameras.lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
 
-        cameras_lock.get(&camera_id)
-            .ok_or_else(|| format!("Camera {} not found", camera_id))?
-            .clone()
-    }; // Lock is dropped here
+    let handle = cameras_lock.get(&camera_id)
+        .ok_or_else(|| format!("Camera {} not found", camera_id))?;
 
-    let frame_bytes = camera::capture_frame(&handle).await?;
+    if let Some(capture) = &handle.persistent_capture {
+        let capture_lock = capture.lock()
+            .map_err(|e| format!("Capture lock error: {}", e))?;
 
-    // Convert to base64 for frontend
-    use base64::{Engine as _, engine::general_purpose};
-    Ok(general_purpose::STANDARD.encode(&frame_bytes))
+        let frame_bytes = capture_lock.get_frame()?;
+
+        // Convert to base64 for frontend
+        use base64::{Engine as _, engine::general_purpose};
+        Ok(general_purpose::STANDARD.encode(&frame_bytes))
+    } else {
+        Err("Persistent capture not initialized".to_string())
+    }
 }
 
 #[tauri::command]
@@ -96,9 +126,18 @@ async fn disconnect_camera(
 ) -> Result<(), String> {
     println!("[Rust] Disconnecting camera: {}", camera_id);
 
-    cameras.lock()
-        .map_err(|e| format!("Lock error: {}", e))?
-        .remove(&camera_id);
+    let mut cameras_lock = cameras.lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    if let Some(mut handle) = cameras_lock.remove(&camera_id) {
+        // Stop persistent capture if exists
+        if let Some(capture) = handle.persistent_capture.take() {
+            let mut capture_lock = capture.lock()
+                .map_err(|e| format!("Capture lock error: {}", e))?;
+            capture_lock.stop()?;
+        }
+        println!("[Rust] ✅ Camera {} disconnected", camera_id);
+    }
 
     Ok(())
 }
