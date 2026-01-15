@@ -49,12 +49,16 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
   onClose,
   onEditZones,
 }) => {
+  // DEBUG: Log component render IMMEDIATELY
+  console.log('===== LiveCameraView RENDERING =====');
+  console.log('[LiveView] Props:', { cameraId, cameraName });
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { backendUrl, apiKey } = useSettingsStore();
   const [detections, setDetections] = useState<Detection[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false); // START FALSE - optimistic!
   const [isDetecting, setIsDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({
@@ -187,16 +191,23 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
     let detectionQueue: string[] = []; // Queue for parallel processing
     let detecting = false;
 
-    // Reset loading state on mount
-    setIsLoading(true);
+    // Show loading ONLY if no frame after 2 seconds (optimistic start)
+    const loadingTimeout = setTimeout(() => {
+      if (mounted && frameCount === 0) {
+        console.log('[LiveView] No frames yet after 2s, showing loading...');
+        setIsLoading(true);
+      }
+    }, 2000);
 
     // ==========================================
-    // LOOP 1: SMOOTH CAPTURE (15 FPS for videos, 5 FPS for cameras)
+    // LOOP 1: FAST CAPTURE (2 FPS - OPTIMIZED)
     // ==========================================
     const captureLoop = setInterval(async () => {
       if (!mounted) return;
 
       try {
+        console.log('[LiveView] Capturing frame...');
+
         // Capture frame - NO API call, NO blocking
         const frameBase64 = await invoke<string>('get_frame', {
           cameraId,
@@ -213,11 +224,14 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           detectionQueue.push(frameBase64);
         }
 
-        // Hide loading on FIRST successful frame
+        console.log('[LiveView] Frame captured, size:', frameBase64.length);
+
+        // Hide loading on FIRST successful frame + cancel timeout
         if (frameCount === 1) {
+          clearTimeout(loadingTimeout); // Cancel loading timeout
           setIsLoading(false);
           setError(null);
-          console.log('[LiveView] First frame captured, size:', frameBase64.length);
+          console.log('[LiveView] First frame received!');
         }
 
         // Update FPS counter
@@ -235,7 +249,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
           // Don't set loading on error - keep showing last frame
         }
       }
-    }, 66); // SMOOTH: Every 66ms (~15 FPS for smooth video playback)
+    }, 500); // FASTER: Every 0.5 seconds (2 FPS)
 
     // ==========================================
     // LOOP 2: FAST AI DETECTION (2s interval + queue processing)
@@ -306,7 +320,7 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
     }, 2000); // FASTER: Every 2 seconds (was 5 seconds)
 
     // ==========================================
-    // LOOP 3: SMOOTH DISPLAY RENDERING (15 FPS)
+    // LOOP 3: FAST DISPLAY RENDERING (10 FPS)
     // ==========================================
     const displayLoop = setInterval(() => {
       if (!mounted || !latestFrame) return;
@@ -350,12 +364,13 @@ export const LiveCameraView: React.FC<LiveCameraViewProps> = ({
       img.onerror = (e) => {
         console.error('[LiveView] Image load error:', e);
       };
-    }, 66); // 15 FPS - smooth video playback
+    }, 100); // 10 FPS - smooth display
 
     // Cleanup
     return () => {
       console.log('[LiveView] Component unmounting, cleaning up loops');
       mounted = false;
+      clearTimeout(loadingTimeout);
       clearInterval(captureLoop);
       clearInterval(detectionLoop);
       clearInterval(displayLoop);
